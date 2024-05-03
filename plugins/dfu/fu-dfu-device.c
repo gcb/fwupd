@@ -1439,6 +1439,7 @@ fu_dfu_device_dump_firmware(FuDevice *device, FuProgress *progress, GError **err
 static FuFirmware *
 fu_dfu_device_prepare_firmware(FuDevice *device,
 			       GInputStream *stream,
+			       FuProgress *progress,
 			       FwupdInstallFlags flags,
 			       GError **error)
 {
