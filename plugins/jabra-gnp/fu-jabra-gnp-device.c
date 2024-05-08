@@ -21,8 +21,8 @@
 
 #define FU_JABRA_GNP_IFACE 0x05
 
-#define FU_JABRA_GNP_ADDRESS_PARENT	 0x04
-#define FU_JABRA_GNP_ADDRESS_MAYBE_CHILD 0x01
+#define FU_JABRA_GNP_ADDRESS_PARENT    0x01
+#define FU_JABRA_GNP_ADDRESS_OTA_CHILD 0x04
 
 struct _FuJabraGnpDevice {
 	FuUsbDevice parent_instance;
@@ -74,7 +74,7 @@ fu_jabra_gnp_device_tx_cb(FuDevice *device, gpointer user_data, GError **error)
 {
 	FuJabraGnpDevice *self = FU_JABRA_GNP_DEVICE(device);
 	FuJabraGnpTxData *tx_data = (FuJabraGnpTxData *)user_data;
-	FuUsbDevice *target = self->address == FU_JABRA_GNP_ADDRESS_PARENT
+	FuUsbDevice *target = self->address == FU_JABRA_GNP_ADDRESS_OTA_CHILD
 				  ? FU_USB_DEVICE(fu_device_get_parent(device))
 				  : FU_USB_DEVICE(self);
 	if (!g_usb_device_control_transfer(fu_usb_device_get_dev(target),
@@ -104,7 +104,7 @@ fu_jabra_gnp_device_rx_cb(FuDevice *device, gpointer user_data, GError **error)
 	    {FU_JABRA_GNP_IFACE, 0x00, self->address, 0x00, 0x0A, 0x12, 0x02};
 	guint8 empty_buf[FU_JABRA_GNP_BUF_SIZE] = {0x00};
 	FuJabraGnpRxData *rx_data = (FuJabraGnpRxData *)user_data;
-	FuUsbDevice *target = self->address == FU_JABRA_GNP_ADDRESS_PARENT
+	FuUsbDevice *target = self->address == FU_JABRA_GNP_ADDRESS_OTA_CHILD
 				  ? FU_USB_DEVICE(fu_device_get_parent(device))
 				  : FU_USB_DEVICE(self);
 
@@ -212,7 +212,7 @@ fu_jabra_gnp_device_read_child_dfu_pid(FuJabraGnpDevice *self,
 {
 	guint8 txbuf[FU_JABRA_GNP_BUF_SIZE] = {
 	    FU_JABRA_GNP_IFACE,
-	    FU_JABRA_GNP_ADDRESS_PARENT,
+	    FU_JABRA_GNP_ADDRESS_OTA_CHILD,
 	    0x00,
 	    self->sequence_number,
 	    0x46,
@@ -240,7 +240,10 @@ fu_jabra_gnp_device_read_child_dfu_pid(FuJabraGnpDevice *self,
 				  (gpointer)&rx_data,
 				  error))
 		return FALSE;
-
+	/* no child device to respond properly */
+	if (rx_data.rxbuf[5] == 0xFE) {
+		return FALSE;
+	}
 	/* success */
 	*child_dfu_pid = fu_memread_uint16(rx_data.rxbuf + 7, G_LITTLE_ENDIAN);
 	return TRUE;
@@ -669,7 +672,7 @@ fu_jabra_gnp_device_probe(FuDevice *device, GError **error)
 	FuJabraGnpDevice *self = FU_JABRA_GNP_DEVICE(device);
 
 	/* already set by parent */
-	if (self->address == FU_JABRA_GNP_ADDRESS_PARENT)
+	if (self->address == FU_JABRA_GNP_ADDRESS_OTA_CHILD)
 		return TRUE;
 
 	self->iface_hid =
@@ -695,12 +698,12 @@ fu_jabra_gnp_device_add_child(FuDevice *device, guint dfu_pid, GError **error)
 	g_autoptr(FuJabraGnpDevice) child = NULL;
 
 	/* sanity check */
-	if (self->address != FU_JABRA_GNP_ADDRESS_MAYBE_CHILD) {
+	if (self->address != FU_JABRA_GNP_ADDRESS_PARENT) {
 		g_set_error(error,
 			    FWUPD_ERROR,
 			    FWUPD_ERROR_NOT_SUPPORTED,
 			    "expected address 0x%x, and got 0x%x",
-			    (guint)FU_JABRA_GNP_ADDRESS_MAYBE_CHILD,
+			    (guint)FU_JABRA_GNP_ADDRESS_OTA_CHILD,
 			    self->address);
 		return FALSE;
 	}
@@ -708,7 +711,7 @@ fu_jabra_gnp_device_add_child(FuDevice *device, guint dfu_pid, GError **error)
 	child = g_object_new(FU_TYPE_JABRA_GNP_DEVICE, "parent", FU_DEVICE(self), NULL);
 	child->iface_hid = self->iface_hid;
 	child->sequence_number = 0;
-	child->address = FU_JABRA_GNP_ADDRESS_PARENT;
+	child->address = FU_JABRA_GNP_ADDRESS_OTA_CHILD;
 	child->dfu_pid = dfu_pid;
 
 	/* prohibit to close parent's communication descriptor */
@@ -751,15 +754,11 @@ fu_jabra_gnp_device_setup(FuDevice *device, GError **error)
 		return FALSE;
 	if (!fu_jabra_gnp_device_read_dfu_pid(self, error))
 		return FALSE;
-	if (self->address == FU_JABRA_GNP_ADDRESS_MAYBE_CHILD) {
+	if (self->address == FU_JABRA_GNP_ADDRESS_PARENT) {
 		guint16 child_dfu_pid = 0;
-		if (!fu_jabra_gnp_device_read_child_dfu_pid(self, &child_dfu_pid, error))
-			return FALSE;
+		fu_jabra_gnp_device_read_child_dfu_pid(self, &child_dfu_pid, error);
 		if (child_dfu_pid > 0x0) {
-			if (!fu_jabra_gnp_device_add_child(FU_DEVICE(self), child_dfu_pid, error)) {
-				g_prefix_error(error, "failed to add child: ");
-				return FALSE;
-			}
+			fu_jabra_gnp_device_add_child(FU_DEVICE(self), child_dfu_pid, error);
 		}
 	}
 	return TRUE;
